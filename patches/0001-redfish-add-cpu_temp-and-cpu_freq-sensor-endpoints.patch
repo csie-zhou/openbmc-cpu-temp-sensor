@@ -1,0 +1,147 @@
+From 54cf3933d9791b1c62165e2119e1cdd26bfb6381 Mon Sep 17 00:00:00 2001
+From: csie-zhou <r12922194@csie.ntu.edu.tw>
+Date: Sat, 2 May 2026 17:39:20 +0800
+Subject: [PATCH] redfish: add cpu_temp and cpu_freq sensor endpoints
+
+Upstream-Status: Inappropriate [custom sensor for Romulus demo]
+
+Adds two GET handlers:
+  /redfish/v1/Chassis/chassis/Sensors/temperature/cpu_temp
+  /redfish/v1/Chassis/chassis/Sensors/frequency/cpu_freq
+---
+ redfish-core/lib/sensors.hpp | 100 +++++++++++++++++++++++++++++++++++
+ redfish-core/src/redfish.cpp |   2 +
+ 2 files changed, 102 insertions(+)
+
+diff --git a/redfish-core/lib/sensors.hpp b/redfish-core/lib/sensors.hpp
+index d3ee9264ac..871f130ea7 100644
+--- a/redfish-core/lib/sensors.hpp
++++ b/redfish-core/lib/sensors.hpp
+@@ -52,6 +52,7 @@
+ #include <utility>
+ #include <variant>
+ #include <vector>
++#include <fstream>
+ 
+ namespace redfish
+ {
+@@ -2534,4 +2535,103 @@ inline void requestRoutesSensor(App& app)
+             std::bind_front(sensors::handleSensorGet, std::ref(app)));
+ }
+ 
++inline void handleCpuTempGet(
++    App& /*app*/, const crow::Request& /*req*/,
++    const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
++    const std::string& chassisId)
++{
++    if (chassisId != "chassis")
++    {
++        messages::resourceNotFound(asyncResp->res, "Chassis", chassisId);
++        return;
++    }
++
++    std::ifstream tempFile("/tmp/cpu_temp");
++    if (!tempFile.is_open())
++    {
++        asyncResp->res.result(
++            boost::beast::http::status::service_unavailable);
++        asyncResp->res.jsonValue["error"]["code"] =
++            "Base.1.0.ServiceTemporarilyUnavailable";
++        asyncResp->res.jsonValue["error"]["message"] =
++            "Thermal sensor not available";
++        return;
++    }
++
++    int millidegrees = 0;
++    tempFile >> millidegrees;
++    const double celsius = static_cast<double>(millidegrees) / 1000.0;
++
++    nlohmann::json& j     = asyncResp->res.jsonValue;
++    j["@odata.type"]      = "#Sensor.v1_2_0.Sensor";
++    j["@odata.id"]        =
++        "/redfish/v1/Chassis/chassis/Sensors/temperature/cpu_temp";
++    j["Id"]               = "cpu_temp";
++    j["Name"]             = "CPU Temperature";
++    j["ReadingType"]      = "Temperature";
++    j["Reading"]          = celsius;
++    j["ReadingUnits"]     = "Cel";
++    j["Status"]["Health"] = "OK";
++    j["Status"]["State"]  = "Enabled";
++}
++
++inline void requestRoutesCpuTemp(App& app)
++{
++    BMCWEB_ROUTE(app,
++                 "/redfish/v1/Chassis/<str>/Sensors/temperature/cpu_temp")
++        .privileges(redfish::privileges::getSensor)
++        .methods(boost::beast::http::verb::get)(
++            std::bind_front(handleCpuTempGet, std::ref(app)));
++}
++
++inline void handleCpuFreqGet(
++    App& /*app*/, const crow::Request& /*req*/,
++    const std::shared_ptr<bmcweb::AsyncResp>& asyncResp,
++    const std::string& chassisId)
++{
++    if (chassisId != "chassis")
++    {
++        messages::resourceNotFound(asyncResp->res, "Chassis", chassisId);
++        return;
++    }
++
++    // /tmp/cpu_freq: kHz integer (same format as sysfs cpufreq)
++    // Real hardware: /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
++    std::ifstream freqFile("/tmp/cpu_freq");
++    if (!freqFile.is_open())
++    {
++        asyncResp->res.result(
++            boost::beast::http::status::service_unavailable);
++        asyncResp->res.jsonValue["error"]["code"] =
++            "Base.1.0.ServiceTemporarilyUnavailable";
++        asyncResp->res.jsonValue["error"]["message"] =
++            "Frequency sensor not available";
++        return;
++    }
++
++    int khz = 0;
++    freqFile >> khz;
++    const double mhz = static_cast<double>(khz) / 1000.0;
++
++    nlohmann::json& j   = asyncResp->res.jsonValue;
++    j["@odata.type"]    = "#Sensor.v1_2_0.Sensor";
++    j["@odata.id"]      =
++        "/redfish/v1/Chassis/chassis/Sensors/frequency/cpu_freq";
++    j["Id"]             = "cpu_freq";
++    j["Name"]           = "CPU Frequency";
++    j["ReadingType"]    = "Frequency";
++    j["Reading"]        = mhz;
++    j["ReadingUnits"]   = "MHz";
++    j["Status"]["Health"] = "OK";
++    j["Status"]["State"]  = "Enabled";
++}
++
++inline void requestRoutesCpuFreq(App& app)
++{
++    BMCWEB_ROUTE(app,
++                 "/redfish/v1/Chassis/<str>/Sensors/frequency/cpu_freq")
++        .privileges(redfish::privileges::getSensor)
++        .methods(boost::beast::http::verb::get)(
++            std::bind_front(handleCpuFreqGet, std::ref(app)));
++}
+ } // namespace redfish
+diff --git a/redfish-core/src/redfish.cpp b/redfish-core/src/redfish.cpp
+index 495e60f471..5c4ae052b4 100644
+--- a/redfish-core/src/redfish.cpp
++++ b/redfish-core/src/redfish.cpp
+@@ -222,6 +222,8 @@ RedfishService::RedfishService(App& app)
+ 
+     requestRoutesSensorCollection(app);
+     requestRoutesSensor(app);
++    requestRoutesCpuTemp(app);
++    requestRoutesCpuFreq(app);
+ 
+     requestRoutesTaskMonitor(app);
+     requestRoutesTaskService(app);
+-- 
+2.34.1
+
